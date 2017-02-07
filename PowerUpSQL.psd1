@@ -1,7 +1,7 @@
 #requires -Version 1
 @{
     ModuleToProcess   = 'PowerUpSQL.psm1'
-    ModuleVersion     = '1.0.0.40'
+    ModuleVersion     = '1.0.0.55'
     GUID              = 'dd1fe106-2226-4869-9363-44469e930a4a'
     Author            = 'Scott Sutherland'
     Copyright         = 'BSD 3-Clause'
@@ -41,6 +41,7 @@
         'Get-SQLServerInfoThreaded', 
         'Get-SQLServerLink', 
         'Get-SQLServerLogin', 
+        'Get-SQLServerLoginDefaultPw',        
         'Get-SQLServerPriv', 
         'Get-SQLServerRole', 
         'Get-SQLServerRoleMember', 
@@ -49,6 +50,7 @@
         'Get-SQLSession', 
         'Get-SQLStoredProcedure', 
         'Get-SQLStoredProcedureSQLi',        
+        'Get-SQLStoredProcedureAutoExec',          
         'Get-SQLSysadminCheck', 
         'Get-SQLTable', 
         'Get-SQLTriggerDdl', 
@@ -66,7 +68,10 @@
         'Invoke-SQLAuditRoleDbOwner', 
         'Invoke-SQLAuditSampleDataByColumn', 
         'Invoke-SQLAuditWeakLoginPw', 
-        'Invoke-SQLAuditSQLiExecuteAs',        
+        'Invoke-SQLAuditSQLiSpExecuteAs',    
+        'Invoke-SQLAuditSQLiSpSigned',  
+        'Invoke-SQLAuditDefaultLoginPw',    
+        'Invoke-SQLAuditPrivAutoExecSp',     
         'Invoke-SQLDumpInfo', 
         'Invoke-SQLEscalatePriv', 
         'Invoke-SQLOSCmd'		

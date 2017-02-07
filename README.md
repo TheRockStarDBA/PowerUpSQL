@@ -29,12 +29,17 @@ PowerUpSQL was designed with six objectives in mind:
 
 ### Module Information
 * Author: Scott Sutherland (@_nullbind), NetSPI - 2016
-* Contributors: Antti Rantasaari and Eric Gruber (@egru)
+* Major Contributors: Antti Rantasaari and Eric Gruber (@egru)
+* Contributors: Alexander Leary, @leoloobeek, and @ktaranov
 * License: BSD 3-Clause
 * Required Dependencies: None
  
 For setup instructions, function overviews, and common usage information check out the PowerUpSQL wiki: https://github.com/NetSPI/PowerUpSQL/wiki
 
-### Hacking SQL Server on Scale with PowerShell Presentation
-* DerbyCon 6.0 Slides: http://www.slideshare.net/nullbind/derbycon2016-hacking-sql-server-on-scale-with-powershell
-* DerbyCon 6.0 Videos: https://www.youtube.com/watch?v=xLbPztByc8M
+### Hacking SQL Server on Scale with PowerShell Presentations
+* [2016 OCT - Arcticcon Slides] (http://www.slideshare.net/nullbind/2016-arcticcon-hacking-sql-server-on-scale-with-powershell-v2)
+* [2016 OCT - PASS Webinar Video] (https://youtu.be/npoORzfP7rw)
+* [2016 SEPT - DerbyCon6 Slides] (http://www.slideshare.net/nullbind/derbycon2016-hacking-sql-server-on-scale-with-powershell)
+* [2016 SEPT - DerbyCon6 Videos] (https://www.youtube.com/watch?v=xLbPztByc8M)
+
+
